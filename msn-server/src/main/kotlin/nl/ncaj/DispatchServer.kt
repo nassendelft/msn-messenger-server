@@ -5,6 +5,7 @@ import nl.ncaj.Participant.Companion.Participant
 import java.net.ServerSocket
 
 internal suspend fun dispatchServer(
+    db: Database,
     port: Int = 1863,
     nsConnectionString: String = "127.0.0.1:1864",
 ): Unit = coroutineScope {
@@ -22,7 +23,7 @@ internal suspend fun dispatchServer(
             println("Client connected to ds: $connectionId")
 
             try {
-                participant.handleInitClient(serverConnectionString, nsConnectionString)
+                participant.handleInitClient(serverConnectionString, nsConnectionString, db::getPrincipal)
             } catch (e: Throwable) {
                 println("Error handling client: ${e.message}")
                 this@launch.cancel()
@@ -36,7 +37,11 @@ internal suspend fun dispatchServer(
     error("Dispatch server stopped")
 }
 
-private fun Participant.handleInitClient(serverConnectionString: String, nsConnectionString: String) {
+private fun Participant.handleInitClient(
+    serverConnectionString: String,
+    nsConnectionString: String,
+    principals: (email: String) -> Principal?,
+) {
     var command = readCommand().split(" ")
     check(command[0] == "VER") { "Expected 'VER' but received '${command[0]}'" }
     if (!command.contains("MSNP2")) {

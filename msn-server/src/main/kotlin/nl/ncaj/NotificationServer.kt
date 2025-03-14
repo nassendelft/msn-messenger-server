@@ -9,6 +9,8 @@ import kotlin.uuid.Uuid
 internal class NotificationSession(
     private val participant: Participant,
     private val sbConnectionString: String,
+    private val principals: (email: String) -> Principal?,
+    private val updatePrincipal: (Principal) -> Unit,
 ) {
     private var initialCHG = true
 
@@ -67,7 +69,7 @@ internal class NotificationSession(
 
     // Synchronise
     private fun handleSYN(args: List<String>) {
-        fun sendContactList(trId: String, type: String, syncVersion: Int, list: List<Contact>) {
+        fun sendContactList(trId: String, type: String, syncVersion: Int, list: Set<Contact>) {
             if (list.isEmpty()) {
                 participant.sendCommand("LST $trId $type $syncVersion 0 0\r\n")
             } else {
@@ -104,6 +106,8 @@ internal class NotificationSession(
         val principal = participant.principal
         principal.status = status
         principal.syncVersion++
+
+        updatePrincipal(principal)
 
         participant.sendCommand("$cmd $trId $status\r\n")
 
@@ -170,9 +174,9 @@ internal class NotificationSession(
         list.add(email, displayName)
 
         principal.syncVersion++
+        updatePrincipal(principal)
 
-        participant.sendCommand("$cmd $trId $type ${list.id} $email $displayName\r\n")
-
+        participant.sendCommand("$cmd $trId $type ${list.version} $email $displayName\r\n")
 
         sessions(otherPrincipal.email)?.let {
             it.sendADD("RL", principal.email, principal.displayName)
@@ -210,7 +214,9 @@ internal class NotificationSession(
 
         principal.syncVersion++
 
-        participant.sendCommand("$cmd $trId $type ${list.id} $email\r\n")
+        updatePrincipal(principal)
+
+        participant.sendCommand("$cmd $trId $type ${list.version} $email\r\n")
 
         sessions(otherPrincipal.email)?.let {
             it.sendREM("RL", principal.email)
@@ -243,6 +249,8 @@ internal class NotificationSession(
 
         principal.displayName = displayName
         principal.syncVersion++
+
+        updatePrincipal(principal)
 
         participant.sendCommand("$cmd $trId ${principal.syncVersion} $email $displayName\r\n")
 
@@ -283,7 +291,7 @@ internal class NotificationSession(
                 return
             }
         }
-        val listVersion = list.id
+        val listVersion = list.version
         if (list.list.isEmpty()) {
             participant.sendCommand("$cmd $trId $type 0 0\r\n")
         } else {
@@ -330,7 +338,9 @@ internal class NotificationSession(
         list.add(principal.email, principal.displayName)
         principal.syncVersion++
 
-        participant.sendCommand("ADD 0 $type ${list.id} $email $displayName\r\n")
+        updatePrincipal(principal)
+
+        participant.sendCommand("ADD 0 $type ${list.version} $email $displayName\r\n")
     }
 
     private fun sendREM(type: String, email: String) {
@@ -344,7 +354,9 @@ internal class NotificationSession(
         list.remove(principal.email)
         principal.syncVersion++
 
-        participant.sendCommand("REM 0 $type ${list.id} $email\r\n")
+        updatePrincipal(principal)
+
+        participant.sendCommand("REM 0 $type ${list.version} $email\r\n")
     }
 
     private fun disconnect(reason: String) {
@@ -363,6 +375,7 @@ internal class NotificationSession(
 }
 
 internal suspend fun notificationServer(
+    db: Database,
     port: Int = 1864,
     sbConnectionString: String = "127.0.0.1:1865",
 ): Unit = coroutineScope {
@@ -375,7 +388,7 @@ internal suspend fun notificationServer(
         launch(Dispatchers.Default) {
             val connectionId = "${clientSocket.inetAddress.hostAddress}:${clientSocket.port}"
             val participant = Participant(clientSocket, connectionId)
-            val session = NotificationSession(participant, sbConnectionString)
+            val session = NotificationSession(participant, sbConnectionString, db::getPrincipal, db::updatePrincipal)
 
             println("Client connected to ns: $connectionId")
 

@@ -5,7 +5,10 @@ import java.net.ServerSocket
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
-private class SwitchBoardSession(val hash: String) {
+private class SwitchBoardSession(
+    val hash: String,
+    private val principals: (email: String) -> Principal?
+) {
     val participants = mutableSetOf<Participant>()
 
     fun handleCommand(participant: Participant, command: List<String>) =
@@ -70,12 +73,14 @@ private class SwitchBoardSession(val hash: String) {
 }
 
 internal suspend fun switchBoardServer(
+    db: Database,
     port: Int = 1865
 ): Unit = coroutineScope {
     val serverSocket = ServerSocket(port)
     println("SwitchBoard listening on port $port")
     val sessions = mutableMapOf<String, SwitchBoardSession>()
     val sessionsByParticipant = mutableMapOf<Participant, SwitchBoardSession>()
+    val principals = db::getPrincipal
 
     while (isActive) {
         val socket = serverSocket.accept()
@@ -92,7 +97,7 @@ internal suspend fun switchBoardServer(
                     if (command[0] == "USR") {
                         val hash = command[3]
                         participant.principal = principals(command[2])!!
-                        SwitchBoardSession(hash).also {
+                        SwitchBoardSession(hash, principals).also {
                             sessions[hash] = it
                             sessionsByParticipant[participant] = it
                         }.apply { participants.add(participant) }

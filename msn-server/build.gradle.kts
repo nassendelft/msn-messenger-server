@@ -12,6 +12,7 @@ repositories {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+    implementation("org.xerial:sqlite-jdbc:3.44.1.0")
 }
 
 application {
