@@ -1,43 +1,45 @@
 package nl.ncaj
 
-import kotlinx.coroutines.*
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.launch
 import nl.ncaj.Participant.Companion.Participant
-import java.net.ServerSocket
 
 internal suspend fun dispatchServer(
     db: Database,
     port: Int = 1863,
     nsConnectionString: String = "127.0.0.1:1864",
 ): Unit = coroutineScope {
-    val serverSocket = ServerSocket(port)
-    val serverConnectionString = "${serverSocket.inetAddress.hostAddress}:$port"
-    println("DispatchServer listening on port $port")
+    openSocket(port)
+        .onStart { println("DispatchServer listening on port $port") }
+        .onCompletion { println("Dispatch server stopped") }
+        .onEach { (hostAddress, client, clientAddress) ->
+            launch {
+                val serverConnectionString = "${hostAddress.address}:${hostAddress.port}"
+                val connectionId = "${clientAddress.address}:${clientAddress.port}"
+                val participant = Participant(client, connectionId)
 
-    while (isActive) {
-        val clientSocket = serverSocket.accept()
+                println("Client connected to ds: $connectionId")
 
-        launch(Dispatchers.Default) {
-            val connectionId = "${clientSocket.inetAddress.hostAddress}:${clientSocket.port}"
-            val participant = Participant(clientSocket, connectionId)
-
-            println("Client connected to ds: $connectionId")
-
-            try {
-                participant.handleInitClient(serverConnectionString, nsConnectionString, db::getPrincipal)
-            } catch (e: Throwable) {
-                println("Error handling client: ${e.message}")
-                this@launch.cancel()
-            } finally {
-                clientSocket.close()
-                println("Client disconnected from ds: $connectionId")
+                try {
+                    participant.handleInitClient(serverConnectionString, nsConnectionString, db::getPrincipal)
+                } catch (e: Throwable) {
+                    println("Error handling client: ${e.message}")
+                    this@launch.cancel()
+                } finally {
+                    client.close()
+                    println("Client disconnected from ds: $connectionId")
+                }
             }
         }
-    }
-
-    error("Dispatch server stopped")
+        .collect()
 }
 
-private fun Participant.handleInitClient(
+private suspend fun Participant.handleInitClient(
     serverConnectionString: String,
     nsConnectionString: String,
     principals: (email: String) -> Principal?,

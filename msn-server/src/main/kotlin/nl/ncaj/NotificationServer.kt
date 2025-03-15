@@ -1,8 +1,11 @@
 package nl.ncaj
 
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
 import nl.ncaj.Participant.Companion.Participant
-import java.net.ServerSocket
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
@@ -34,7 +37,7 @@ internal class NotificationSession(
     )
 
     @OptIn(ExperimentalStdlibApi::class)
-    fun authenticate() {
+    suspend fun authenticate() {
         var command = participant.readCommand().split(" ")
         check(command[0] == "VER") { "Expected 'VER' but received '${command[0]}'" }
         if (!command.contains("MSNP2")) {
@@ -379,35 +382,32 @@ internal suspend fun notificationServer(
     port: Int = 1864,
     sbConnectionString: String = "127.0.0.1:1865",
 ): Unit = coroutineScope {
-    val serverSocket = ServerSocket(port)
-    println("NotificationServer listening on port $port")
+    openSocket(port)
+        .onStart { println("NotificationServer listening on port $port") }
+        .onCompletion { println("Notification server stopped") }
+        .onEach { (_, client, clientAddress) ->
+            launch {
+                val connectionId = "${clientAddress.address}:${clientAddress.port}"
+                val participant = Participant(client, connectionId)
+                val session = NotificationSession(participant, sbConnectionString, db::getPrincipal, db::updatePrincipal)
 
-    while (isActive) {
-        val clientSocket = serverSocket.accept()
+                println("Client connected to ns: $connectionId")
 
-        launch(Dispatchers.Default) {
-            val connectionId = "${clientSocket.inetAddress.hostAddress}:${clientSocket.port}"
-            val participant = Participant(clientSocket, connectionId)
-            val session = NotificationSession(participant, sbConnectionString, db::getPrincipal, db::updatePrincipal)
-
-            println("Client connected to ns: $connectionId")
-
-            try {
-                session.authenticate()
-                sessions[participant.principal.email] = session
-                while (isActive) { session.handleCommand(participant.readCommand().split(" ")) }
-            } catch (e: Throwable) {
-                println("Error handling client: ${e.message}")
-                this@launch.cancel()
-            } finally {
-                if (participant.isInitialized) sessions.remove(participant.principal.email)
-                clientSocket.close()
-                println("Client disconnected from ns: $connectionId")
+                try {
+                    session.authenticate()
+                    sessions[participant.principal.email] = session
+                    while (isActive) { session.handleCommand(participant.readCommand().split(" ")) }
+                } catch (e: Throwable) {
+                    println("Error handling client: ${e.message}")
+                    this@launch.cancel()
+                } finally {
+                    if (participant.isInitialized) sessions.remove(participant.principal.email)
+                    client.close()
+                    println("Client disconnected from ns: $connectionId")
+                }
             }
         }
-    }
-
-    error("Notification server stopped")
+        .collect()
 }
 
 private val availableStatus = setOf(

@@ -1,15 +1,14 @@
 package nl.ncaj
 
-import java.io.BufferedWriter
-import java.io.InputStream
-import java.net.Socket
-import java.nio.charset.Charset
+import java.nio.ByteBuffer
+import java.nio.channels.AsynchronousSocketChannel
 
 internal class Participant private constructor(
-    private val writer: BufferedWriter,
-    private val reader: InputStream,
+    private val write: (ByteBuffer) -> Unit,
+    private val readUntil: suspend (ByteBuffer, (ByteArray, offset: Int, size: Int) -> Boolean) -> ByteArray,
     private val clientConnectionDetails: String,
 ) {
+    private val buffer = ByteBuffer.allocate(4096)
 
     lateinit var principal: Principal
 
@@ -26,56 +25,28 @@ internal class Participant private constructor(
         } else {
             println("$clientConnectionDetails <<< ${command.trim()}")
         }
-        writer.write(command)
-        writer.flush()
+        write(ByteBuffer.wrap(command.toByteArray()))
     }
 
     fun sendError(trId: String, code: String = "500") {
         sendCommand("$code $trId\r\n")
     }
-
-    fun readCommand(): String {
-        val command = readLineOrThrow()
+    suspend fun readCommand(): String {
+        val command = readUntil(buffer) { bytes, _, size ->
+            size > 2 && bytes[size - 2] == '\r'.code.toByte() && bytes[size - 1] == '\n'.code.toByte()
+        }.decodeToString().trim()
         println("$clientConnectionDetails >>> $command")
         return command
     }
 
-    fun readMessage(length: Int): String {
+    suspend fun readMessage(length: Int): String {
         // MESSAGE IS NOT LOGGED HERE as this is user content
-        val array = reader.readNBytes(length)
-        return String(array).also { println("$clientConnectionDetails >>> $it") }
-    }
-
-    fun readLineOrThrow(charset: Charset = Charsets.UTF_8, maxLineLength: Int = 1664): String {
-        val buffer = ByteArray(maxLineLength + 2)
-        var bufferIndex = 0
-
-        do {
-            val byte = reader.read()
-
-            if (byte == -1) {
-                if (bufferIndex > 0) {
-                    error("Unexpected end of stream before line terminator")
-                } else {
-                    error("End of stream")
-                }
-            }
-
-            buffer[bufferIndex++] = byte.toByte()
-
-            if (bufferIndex >= 2 && buffer[bufferIndex - 2] == '\r'.code.toByte() && buffer[bufferIndex - 1] == '\n'.code.toByte()) {
-                return String(buffer, 0, bufferIndex - 2, charset)
-            } else if (bufferIndex >= maxLineLength + 2) {
-                error("Line exceeds maximum length of $maxLineLength bytes")
-            }
-        } while(true)
+        val result = readUntil(buffer) { _, _, size -> size == length }
+        return result.decodeToString().also { println("$clientConnectionDetails >>> $it") }
     }
 
     companion object {
-        fun Participant(socket: Socket, connectionId: String) = Participant(
-            socket.outputStream.bufferedWriter(),
-            socket.inputStream,
-            connectionId,
-        )
+        fun Participant(socket: AsynchronousSocketChannel, connectionId: String) =
+            Participant(socket::write, socket::readUntil, connectionId)
     }
 }
